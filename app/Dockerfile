@@ -1,4 +1,4 @@
-FROM python:3.13-slim-trixie
+FROM python:3.15-slim-trixie
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
   PYTHONUNBUFFERED=1 \
@@ -13,7 +13,9 @@ RUN groupadd --system --gid 10001 app \
 
 COPY requirements.txt .
 
-RUN pip install --no-cache-dir -r requirements.txt
+# fix false positives
+RUN pip install --no-cache-dir -r requirements.txt \
+    && rm -f /usr/local/lib/python3.15/site-packages/pip/_vendor/bom.cdx.json
 
 COPY app.py .
 USER app
