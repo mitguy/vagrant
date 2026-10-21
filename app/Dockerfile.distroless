@@ -1,0 +1,38 @@
+FROM python:3.13-slim-trixie AS build
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+  PYTHONUNBUFFERED=1 \
+  PIP_NO_CACHE_DIR=1 \
+  PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /build
+
+COPY requirements.txt .
+
+RUN pip install --no-cache-dir --target=/build/deps -r requirements.txt \
+    && rm -f /build/deps/pip/_vendor/bom.cdx.json
+
+FROM gcr.io/distroless/python3-debian13:nonroot AS app
+
+WORKDIR /app
+
+COPY --from=build /build/deps /app/deps
+COPY app.py /app/app.py
+
+# deps
+ENV PYTHONPATH=/app:/app/deps
+
+# no stdout or stderr
+ENV PYTHONUNBUFFERED=1
+
+# nonroot
+USER 65532
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+  CMD ["python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8080/health')"]
+
+ENTRYPOINT ["python3", "-m", "gunicorn"]
+
+CMD ["--bind", "0.0.0.0:8080", "--workers", "2", "--access-logfile", "-", "app:app"]

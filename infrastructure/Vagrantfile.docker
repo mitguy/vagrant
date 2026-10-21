@@ -1,0 +1,86 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+VM_IP = "192.168.56.10"
+TRIVY_VERSION = "0.74.0"
+TRIVY_SHA256 = "2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a"
+TRIVY_URL = "https://github.com/aquasecurity/trivy/releases/download/v#{TRIVY_VERSION}/trivy_#{TRIVY_VERSION}_Linux-64bit.tar.gz"
+
+Vagrant.configure("2") do |config|
+  config.vm.box = "ubuntu/jammy64"
+  config.vm.box_url = "https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64-vagrant.box"
+  config.vm.box_check_update = false
+  config.vm.hostname = "docker-devsecups-vm"
+  config.vm.network "private_network", ip: VM_IP
+  config.vm.network "forwarded_port", guest: 8080, host: 8181, host_ip: "127.0.0.1"
+
+  config.vm.define "docker"
+
+  config.vm.provider "virtualbox" do |vb|
+    vb.name = "docker-devsecops-vm"
+    vb.memory = 1024
+    vb.cpus = 1
+  end
+
+
+  config.vm.synced_folder "../", "/home/vagrant/docker-devsecops-lab",
+    owner: "vagrant", group: "vagrant",
+    type: "rsync",
+    rsync__chown: true
+
+  config.vm.provision "shell", name: "docker-and-registry", inline: <<-SHELL
+    set -euo pipefail
+    export DEBIAN_FRONTEND=noninteractive
+
+    apt-get update
+    apt-get install -y docker.io docker-buildx curl ca-certificates
+
+    mkdir -p /etc/docker
+    if [ ! -f /etc/docker/daemon.json ]; then
+      echo '{ "insecure-registries": ["#{VM_IP}:5000"] }' > /etc/docker/daemon.json
+    fi
+
+    systemctl enable docker
+    systemctl restart docker
+
+    docker volume create registry-data 2>/dev/null || true
+
+    if ! docker ps --format '{{.Names}}' | grep -q '^registry$'; then
+      docker run -d \
+        --name registry \
+        --restart=always \
+        -p 5000:5000 \
+        -v registry-data:/var/lib/registry \
+        registry:2
+    else
+      docker start registry 2>/dev/null || true
+    fi
+
+    for i in $(seq 1 30); do
+      if curl -sf http://localhost:5000/v2/ >/dev/null 2>&1; then
+        break
+      fi
+      sleep 1
+    done
+  SHELL
+
+  config.vm.provision "shell", name: "trivy", inline: <<-SHELL
+    set -euo pipefail
+
+    if command -v trivy >/dev/null 2>&1 && trivy --version | grep -q "#{TRIVY_VERSION}"; then
+      echo "Trivy #{TRIVY_VERSION} already installed."
+      exit 0
+    fi
+
+    TMP_DIR=$(mktemp -d)
+    trap 'rm -rf "$TMP_DIR"' EXIT
+
+    curl -fsSL -o "$TMP_DIR/trivy.tar.gz" "#{TRIVY_URL}"
+
+    echo "#{TRIVY_SHA256}  $TMP_DIR/trivy.tar.gz" | sha256sum -c -
+
+    tar -xzf "$TMP_DIR/trivy.tar.gz" -C "$TMP_DIR"
+    install -m 0755 "$TMP_DIR/trivy" /usr/local/bin/trivy
+
+    trivy --version
+  SHELL
+end
